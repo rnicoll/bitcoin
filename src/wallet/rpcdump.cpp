@@ -3,9 +3,12 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "base58.h"
+#include "bip39.h"
 #include "chain.h"
 #include "rpcserver.h"
 #include "init.h"
+#include "keystore.h"
+#include "key.h"
 #include "main.h"
 #include "script/script.h"
 #include "script/standard.h"
@@ -505,5 +508,130 @@ UniValue dumpwallet(const UniValue& params, bool fHelp)
     file << "\n";
     file << "# End of dump\n";
     file.close();
+    return NullUniValue;
+}
+
+/**
+ * Controller code for recovering funds held in an HD wallet. Returns number of imported
+ * transactions.
+ */
+int recoverHDWalletFromMnemonic(const CChainParams& chainParams, const CExtKey &key, const int64_t nTimeFirstKey) {
+    int ret = 0;
+    CBasicKeyStore keyStore;
+    std::vector<CExtKey> keypool(100);
+    unsigned int nChild = 0x01 >> 31; // Set the hardened key bit
+    int64_t nNow = GetTime();
+
+    // Generate an initial pool of 100 addresses
+    for (int keyIdx = 0; keyIdx < 100; keyIdx++) {
+        key.Derive(keypool[keyIdx], nChild++);
+        keyStore.AddKeyPubKey(keypool[keyIdx].key, keypool[keyIdx].key.GetPubKey());
+    }
+
+    CBlockIndex* pindex = pindexStart;
+    {
+        LOCK2(cs_main, pwalletMain->cs_wallet);
+
+        // no need to read and scan block, if block was created before
+        // the HD wallet birthday (as adjusted for block time variability)
+        while (pindex && nTimeFirstKey && (pindex->GetBlockTime() < (nTimeFirstKey - 7200)))
+            pindex = chainActive.Next(pindex);
+
+        CWalletDB walletdb(strWalletFile, "r+", false);
+
+        while (pindex)
+        {
+            CBlock block;
+            ReadBlockFromDisk(block, pindex);
+            BOOST_FOREACH(CTransaction& tx, block.vtx)
+            {
+                BOOST_FOREACH(const CTxOut& txout, tx.vout) {
+                    // TODO: Or is an output from a derived key
+                    if (IsMine(&keyStore, txout)) {
+                        // TODO Get a solver so we can recreate the solutions, extract the key ID, and from there get the public key
+                        // Check if the wallet has the key, add it if not
+                        CPubKey pubkey = key.GetPubKey();
+                        assert(key.VerifyPubKey(pubkey));
+                        CKeyID vchAddress = pubkey.GetID();
+
+                        if (!pwalletMain->HaveKey(vchAddress))
+                        {
+                            pwalletMain->MarkDirty();
+                            pwalletMain->SetAddressBook(vchAddress, strLabel, "Recover from HD wallet");
+                            pwalletMain->mapKeyMetadata[vchAddress].nCreateTime = nTimeFirstKey;
+
+                            if (!pwalletMain->AddKeyPubKey(key, pubkey))
+                                throw JSONRPCError(RPC_WALLET_ERROR, "Error adding key to wallet");
+
+                            // whenever a key is imported, we need to scan the whole chain
+                            pwalletMain->nTimeFirstKey = Math.min(pwalletMain->nTimeFirstKey, nTimeFirstKey);
+
+                            // TODO: Refill the key pool so we always keep at least 100 keys after the last seen
+                        }
+
+                        // Add the transaction to the wallet
+                        CWalletTx wtx(pwalletMain, tx);
+
+                        // Get merkle branch if transaction was found in a block
+                        wtx.SetMerkleBranch(*block);
+
+                        pwalletMain->AddToWallet(wtx, false, &walletdb);
+                    }
+                }
+            }
+            pindex = chainActive.Next(pindex);
+            if (GetTime() >= nNow + 60) {
+                nNow = GetTime();
+                LogPrintf("Still recovering HD wallet. At block %d. Progress=%f\n", pindex->nHeight, Checkpoints::GuessVerificationProgress(chainParams.Checkpoints(), pindex));
+            }
+        }
+    }
+
+    return ret;
+}
+
+
+UniValue recoverhdmnemonic(const UniValue& params, bool fHelp)
+{
+    if (!EnsureWalletIsAvailable(fHelp))
+        return NullUniValue;
+    
+    if (fHelp || params.size() < 1 || params.size() > 2)
+        throw runtime_error(
+            "recoverhdwalletmnemonic \"phrase\" [\n"
+            "\nScans blockchain for funds held in an HD wallet and imports those drived keys to the wallet.\n"
+            "\nArguments:\n"
+            "1. \"mnemonic\"    (string, required) The HD wallet mnemonic\n"
+            "2. \"passphrase\"  (string, optional, default=\"\") The wallet passphrase\n"
+            "\nExamples:\n"
+            + HelpExampleCli("recoverhdmnemonic", "\"legal winner thank year wave sausage worth useful legal winner thank yellow\" \"TREZOR\"")
+            + HelpExampleRpc("recoverhdmnemonic", "\"legal winner thank year wave sausage worth useful legal winner thank yellow\" \"TREZOR\"")
+    );
+
+    string mnemonic = params[0].get_str();
+    string passphrase = "";
+    if (params.size() > 1)
+        passphrase = params[1].get_str();
+
+    BIP39Mnemonic bip39Mnemonic(bip39_words_english);
+    if (!bip39Mnemonic.SetMnemonic(mnemonic)) {
+        // We reject arbitrary mnemonics due to the problem of brain wallets
+        // being predictable - see Brainflayer for example
+        throw JSONRPCError(RPC_WALLET_ERROR, "Invalid HD wallet mnemonic - note that mnemonics must be generated in BIP 39 format, arbitrary mnemonics are not supported");
+    }
+
+    CExtKey key;
+    if (!bip39Mnemonic.GetSeed(passphrase, key)) {
+        throw JSONRPCError(RPC_WALLET_ERROR, "Could not derive extended key from mnemonic");
+    }
+
+    if (fPruneMode)
+        throw JSONRPCError(RPC_WALLET_ERROR, "Recovering wallets is disabled in pruned mode");
+
+    // TODO: Derive down the heirarchy to the correct starting point for this chain
+
+    const CChainParams& chainParams = Params();
+    recoverHDWalletFromMnemonic(&key, 1);
+
     return NullUniValue;
 }

@@ -99,6 +99,8 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "prioritisetransaction", 2 },
     { "setban", 2 },
     { "setban", 3 },
+    { "recoverhdmnemonic", 1 },
+    { "recoverhdmnemonic", 2 },
 };
 
 class CRPCConvertTable
