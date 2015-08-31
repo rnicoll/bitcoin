@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <vector>
 
+#define BIP39_KEY_LENGTH 64
 
 /** 
  * secp256k1:
@@ -179,5 +180,55 @@ void ECC_Stop(void);
 
 /** Check that required EC support is available at runtime. */
 bool ECC_InitSanityCheck(void);
+
+class BIP39Mnemonic
+{
+private:
+    std::string mnemonic;
+    const std::string *words;
+    std::map<std::string, int> wordMap;
+
+public:
+    /**
+     * Construct a BIP39 HD wallet mnemonic, with the given word set
+     * to use in mnemonics. Parameter must be a pointer to an array
+     * of 2048 (2^11) words used to construct mnemomics.
+     */
+    BIP39Mnemonic(const std::string *bip39_words);
+    /**
+     * Recreate the entropy bytes from the contained mnemonic. Returns an error if the mnemonic is invalid.
+     */
+    bool GetEntropy(std::vector<unsigned char> &mnemonic);
+    /**
+     * Get a copy of the mnemonic words for the contained entropy.
+     */
+    const std::string &GetMnemonic();
+    /**
+     * Get a copy of the seed from the contained mnemonic.
+     */
+    bool GetSeed(const std::string &passphrase, CExtKey &key);
+    /**
+     * Get a copy of the seed from the contained mnemonic. The pointer must be
+     * to a buffer of at least BIP39_KEY_LENGTH bytes.
+     */
+    bool GetSeed(const std::string &passphrase, unsigned char *seed);
+
+    /**
+     * Set the mnemonic based on the provided entropy.
+     */
+    bool SetEntropy(const std::vector<unsigned char> &setEntropy);
+
+    /*
+     * Set the phrase used for the mnemonic and returns true/false depending
+     * on whether they are a valid BIP 39 mnemonic. Abritrary word sequences
+     * are accepted in accordance to the BIP 39 specification, but strongly
+     * recommended against (see Brainflayer, presented at DEF CON 2015 for
+     * an example of the dangers of brain wallets).
+     *
+     * The phrase must be UTF-8 encoded using Normalization Form Compatibility
+     * Decomposition (NFKD).
+     */
+    bool SetMnemonic(const std::string &phrasee);
+};
 
 #endif // BITCOIN_KEY_H
