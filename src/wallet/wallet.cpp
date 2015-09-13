@@ -1110,9 +1110,13 @@ int CWallet::RecoverHDWallet(CBlockIndex* pindexStart, const CExtKey &key, const
     const CChainParams& chainParams = Params();
 
     // Generate an initial pool of 100 addresses
-    for (int keyIdx = 0; keyIdx < 100; keyIdx++) {
+    for (int keyIdx = 0; keyIdx < 10; keyIdx++) { // TODO: Make it 100 addresses
         key.Derive(keypool[keyIdx], nChild++);
         keyStore.AddKeyPubKey(keypool[keyIdx].key, keypool[keyIdx].key.GetPubKey());
+        CKeyID vchAddress = keypool[keyIdx].key.GetPubKey().GetID();
+        CBitcoinAddress address;
+        address.Set(vchAddress);
+        LogPrintf("Derived public key address %s.\n", address.ToString().c_str());
     }
 
     CBlockIndex* pindex = chainActive.Genesis();
@@ -1130,6 +1134,12 @@ int CWallet::RecoverHDWallet(CBlockIndex* pindexStart, const CExtKey &key, const
 
             BOOST_FOREACH(CTransaction& tx, block.vtx)
             {
+                // Ignore transactions we have already, never update
+                bool fExisted = mapWallet.count(tx.GetHash()) != 0;
+                if (fExisted) {
+                    continue;
+                }
+
                 BOOST_FOREACH(const CTxOut& txout, tx.vout) {
                     vchAddress = zeroKeyID;
                     if (::IsMine(keyStore, txout.scriptPubKey, &vchAddress)
@@ -1166,9 +1176,16 @@ int CWallet::RecoverHDWallet(CBlockIndex* pindexStart, const CExtKey &key, const
                         wtx.SetMerkleBranch(block);
 
                         AddToWallet(wtx, false, &walletdb);
-                    } else {
-                        // TODO: If an output from a derived key, import the transaction only
                     }
+                }
+                if (IsFromMe(tx)) {
+                    // Add the transaction to the wallet
+                    CWalletTx wtx(this, tx);
+
+                    // Get merkle branch
+                    wtx.SetMerkleBranch(block);
+
+                    AddToWallet(wtx, false, &walletdb);
                 }
             }
             pindex = chainActive.Next(pindex);
