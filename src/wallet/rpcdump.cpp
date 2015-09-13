@@ -512,95 +512,6 @@ UniValue dumpwallet(const UniValue& params, bool fHelp)
     return NullUniValue;
 }
 
-/**
- * Controller code for recovering funds held in an HD wallet. Returns number of imported
- * transactions.
- */
-int recoverHDWalletFromMnemonic(const CChainParams& chainParams, const CExtKey &key, const int64_t nTimeFirstKey) {
-    int ret = 0;
-    CBasicKeyStore keyStore;
-    std::vector<CExtKey> keypool(100);
-    unsigned int nChild = 0x01 >> 31; // Set the hardened key bit
-    int64_t nNow = GetTime();
-
-    // Generate an initial pool of 100 addresses
-    for (int keyIdx = 0; keyIdx < 100; keyIdx++) {
-        key.Derive(keypool[keyIdx], nChild++);
-        keyStore.AddKeyPubKey(keypool[keyIdx].key, keypool[keyIdx].key.GetPubKey());
-    }
-
-    CBlockIndex* pindex = chainActive.Genesis();
-    {
-        LOCK2(cs_main, pwalletMain->cs_wallet);
-
-        // no need to read and scan block, if block was created before
-        // the HD wallet birthday (as adjusted for block time variability)
-        while (pindex && nTimeFirstKey && (pindex->GetBlockTime() < (nTimeFirstKey - 7200)))
-            pindex = chainActive.Next(pindex);
-
-        CWalletDB walletdb(strWalletFile, "r+", false);
-
-        while (pindex)
-        {
-            CBlock block;
-            ReadBlockFromDisk(block, pindex);
-            const CKeyID zeroKeyID;
-            CKeyID vchAddress;
-
-            BOOST_FOREACH(CTransaction& tx, block.vtx)
-            {
-                BOOST_FOREACH(const CTxOut& txout, tx.vout) {
-                    vchAddress = zeroKeyID;
-                    if (IsMine(keyStore, txout.scriptPubKey, &vchAddress)
-                        && vchAddress != zeroKeyID) {
-                        // Check if the wallet has the key, add it if not
-                        CKey key;
-                        keyStore.GetKey(vchAddress, key);
-
-                        CPubKey pubkey = key.GetPubKey();
-                        assert(key.VerifyPubKey(pubkey));
-
-                        if (!pwalletMain->HaveKey(vchAddress))
-                        {
-                            pwalletMain->MarkDirty();
-                            pwalletMain->SetAddressBook(vchAddress, strLabel, "Recover from HD wallet");
-                            pwalletMain->mapKeyMetadata[vchAddress].nCreateTime = nTimeFirstKey;
-
-                            if (!pwalletMain->AddKeyPubKey(key, pubkey))
-                                throw JSONRPCError(RPC_WALLET_ERROR, "Error adding key to wallet");
-
-                            // whenever a key is imported, we need to scan the whole chain
-                            if (nTimeFirstKey < pwalletMain->nTimeFirstKey) {
-                                pwalletMain->nTimeFirstKey = nTimeFirstKey;
-                            }
-
-                            // TODO: Refill the key pool so we always keep at least 100 keys after the last seen
-                        }
-
-                        // Add the transaction to the wallet
-                        CWalletTx wtx(pwalletMain, tx);
-
-                        // Get merkle branch
-                        wtx.SetMerkleBranch(block);
-
-                        pwalletMain->AddToWallet(wtx, false, &walletdb);
-                    } else {
-                        // TODO: If an output from a derived key, import the transaction only
-                    }
-                }
-            }
-            pindex = chainActive.Next(pindex);
-            if (GetTime() >= nNow + 60) {
-                nNow = GetTime();
-                LogPrintf("Still recovering HD wallet. At block %d. Progress=%f\n", pindex->nHeight, Checkpoints::GuessVerificationProgress(chainParams.Checkpoints(), pindex));
-            }
-        }
-    }
-
-    return ret;
-}
-
-
 UniValue recoverhdmnemonic(const UniValue& params, bool fHelp)
 {
     if (!EnsureWalletIsAvailable(fHelp))
@@ -641,7 +552,15 @@ UniValue recoverhdmnemonic(const UniValue& params, bool fHelp)
     // TODO: Derive down the heirarchy to the correct starting point for this chain
 
     const CChainParams& chainParams = Params();
-    recoverHDWalletFromMnemonic(chainParams, key, 1);
+
+    CBlockIndex* pindex = chainActive.Genesis();
+    int64_t nTimeSeedGenesis = 1; // TODO: Take this from the user
+
+    // no need to read and scan block, if block was created before
+    // the HD wallet birthday (as adjusted for block time variability)
+    while (pindex && nTimeSeedGenesis && (pindex->GetBlockTime() < (nTimeSeedGenesis - 7200)))
+        pindex = chainActive.Next(pindex);
+    pwalletMain->RecoverHDWallet(pindex, key, "");
 
     return NullUniValue;
 }

@@ -1096,6 +1096,92 @@ int CWallet::ScanForWalletTransactions(CBlockIndex* pindexStart, bool fUpdate)
     return ret;
 }
 
+/**
+ * Scan the block chain (starting from the genesis block) for transactions
+ * from or to the given HD wallet, importing keys as needed.
+ */
+int CWallet::RecoverHDWallet(CBlockIndex* pindexStart, const CExtKey &key, const string strLabel)
+{
+    int ret = 0;
+    CBasicKeyStore keyStore;
+    std::vector<CExtKey> keypool(100);
+    unsigned int nChild = 0x01 >> 31; // Set the hardened key bit
+    int64_t nNow = GetTime();
+    const CChainParams& chainParams = Params();
+
+    // Generate an initial pool of 100 addresses
+    for (int keyIdx = 0; keyIdx < 100; keyIdx++) {
+        key.Derive(keypool[keyIdx], nChild++);
+        keyStore.AddKeyPubKey(keypool[keyIdx].key, keypool[keyIdx].key.GetPubKey());
+    }
+
+    CBlockIndex* pindex = chainActive.Genesis();
+    {
+        LOCK2(cs_main, cs_wallet);
+
+        CWalletDB walletdb(strWalletFile, "r+", false);
+
+        while (pindex)
+        {
+            CBlock block;
+            ReadBlockFromDisk(block, pindex);
+            const CKeyID zeroKeyID;
+            CKeyID vchAddress;
+
+            BOOST_FOREACH(CTransaction& tx, block.vtx)
+            {
+                BOOST_FOREACH(const CTxOut& txout, tx.vout) {
+                    vchAddress = zeroKeyID;
+                    if (::IsMine(keyStore, txout.scriptPubKey, &vchAddress)
+                        && vchAddress != zeroKeyID) {
+                        // Check if the wallet has the key, add it if not
+                        CKey key;
+                        keyStore.GetKey(vchAddress, key);
+
+                        CPubKey pubkey = key.GetPubKey();
+                        assert(key.VerifyPubKey(pubkey));
+
+                        if (!HaveKey(vchAddress))
+                        {
+                            MarkDirty();
+                            SetAddressBook(vchAddress, strLabel, "Recover from HD wallet");
+                            mapKeyMetadata[vchAddress].nCreateTime = nTimeFirstKey;
+
+                            // TODO: Do something if there's an error result
+                            AddKeyPubKey(key, pubkey);
+                            ret++;
+
+                            // whenever a key is imported, we need to scan the whole chain
+                            if (nTimeFirstKey < nTimeFirstKey) {
+                                nTimeFirstKey = nTimeFirstKey;
+                            }
+
+                            // TODO: Refill the key pool so we always keep at least 100 keys after the last seen
+                        }
+
+                        // Add the transaction to the wallet
+                        CWalletTx wtx(this, tx);
+
+                        // Get merkle branch
+                        wtx.SetMerkleBranch(block);
+
+                        AddToWallet(wtx, false, &walletdb);
+                    } else {
+                        // TODO: If an output from a derived key, import the transaction only
+                    }
+                }
+            }
+            pindex = chainActive.Next(pindex);
+            if (GetTime() >= nNow + 60) {
+                nNow = GetTime();
+                LogPrintf("Still recovering HD wallet. At block %d. Progress=%f\n", pindex->nHeight, Checkpoints::GuessVerificationProgress(chainParams.Checkpoints(), pindex));
+            }
+        }
+    }
+
+    return ret;
+}
+
 void CWallet::ReacceptWalletTransactions()
 {
     // If transactions aren't being broadcasted, don't let them into local mempool either
