@@ -16,6 +16,7 @@
 #include "util.h"
 #include "utiltime.h"
 #include "wallet.h"
+#include "wallet/wallet_ismine.h"
 
 #include <fstream>
 #include <stdint.h>
@@ -528,7 +529,7 @@ int recoverHDWalletFromMnemonic(const CChainParams& chainParams, const CExtKey &
         keyStore.AddKeyPubKey(keypool[keyIdx].key, keypool[keyIdx].key.GetPubKey());
     }
 
-    CBlockIndex* pindex = pindexStart;
+    CBlockIndex* pindex = chainActive.Genesis();
     {
         LOCK2(cs_main, pwalletMain->cs_wallet);
 
@@ -543,16 +544,21 @@ int recoverHDWalletFromMnemonic(const CChainParams& chainParams, const CExtKey &
         {
             CBlock block;
             ReadBlockFromDisk(block, pindex);
+            const CKeyID zeroKeyID;
+            CKeyID vchAddress;
+
             BOOST_FOREACH(CTransaction& tx, block.vtx)
             {
                 BOOST_FOREACH(const CTxOut& txout, tx.vout) {
-                    // TODO: Or is an output from a derived key
-                    if (IsMine(&keyStore, txout)) {
-                        // TODO Get a solver so we can recreate the solutions, extract the key ID, and from there get the public key
+                    vchAddress = zeroKeyID;
+                    if (IsMine(keyStore, txout.scriptPubKey, &vchAddress)
+                        && vchAddress != zeroKeyID) {
                         // Check if the wallet has the key, add it if not
+                        CKey key;
+                        keyStore.GetKey(vchAddress, key);
+
                         CPubKey pubkey = key.GetPubKey();
                         assert(key.VerifyPubKey(pubkey));
-                        CKeyID vchAddress = pubkey.GetID();
 
                         if (!pwalletMain->HaveKey(vchAddress))
                         {
@@ -564,7 +570,9 @@ int recoverHDWalletFromMnemonic(const CChainParams& chainParams, const CExtKey &
                                 throw JSONRPCError(RPC_WALLET_ERROR, "Error adding key to wallet");
 
                             // whenever a key is imported, we need to scan the whole chain
-                            pwalletMain->nTimeFirstKey = Math.min(pwalletMain->nTimeFirstKey, nTimeFirstKey);
+                            if (nTimeFirstKey < pwalletMain->nTimeFirstKey) {
+                                pwalletMain->nTimeFirstKey = nTimeFirstKey;
+                            }
 
                             // TODO: Refill the key pool so we always keep at least 100 keys after the last seen
                         }
@@ -572,10 +580,12 @@ int recoverHDWalletFromMnemonic(const CChainParams& chainParams, const CExtKey &
                         // Add the transaction to the wallet
                         CWalletTx wtx(pwalletMain, tx);
 
-                        // Get merkle branch if transaction was found in a block
-                        wtx.SetMerkleBranch(*block);
+                        // Get merkle branch
+                        wtx.SetMerkleBranch(block);
 
                         pwalletMain->AddToWallet(wtx, false, &walletdb);
+                    } else {
+                        // TODO: If an output from a derived key, import the transaction only
                     }
                 }
             }
@@ -631,7 +641,7 @@ UniValue recoverhdmnemonic(const UniValue& params, bool fHelp)
     // TODO: Derive down the heirarchy to the correct starting point for this chain
 
     const CChainParams& chainParams = Params();
-    recoverHDWalletFromMnemonic(&key, 1);
+    recoverHDWalletFromMnemonic(chainParams, key, 1);
 
     return NullUniValue;
 }

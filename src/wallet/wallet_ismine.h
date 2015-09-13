@@ -28,7 +28,13 @@ enum isminetype
 /** used for bitflags of isminetype */
 typedef uint8_t isminefilter;
 
-isminetype IsMine(const CKeyStore& keystore, const CScript& scriptPubKey);
-isminetype IsMine(const CKeyStore& keystore, const CTxDestination& dest);
+/** Determine whether the given script pubkey belongs to the keystore.
+ * Optionally will return the solved key ID, where available, if pKeyID is not NULL.
+ */
+isminetype IsMine(const CKeyStore& keystore, const CScript& scriptPubKey, CKeyID *pKeyID = NULL);
+/** Determine whether the given TX destination belongs to the keystore.
+ * Optionally will return the solved key ID, where available, if pKeyID is not NULL.
+ */
+isminetype IsMine(const CKeyStore& keystore, const CTxDestination& dest, CKeyID *pKeyID = NULL);
 
 #endif // BITCOIN_WALLET_WALLET_ISMINE_H

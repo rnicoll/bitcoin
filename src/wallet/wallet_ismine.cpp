@@ -29,13 +29,13 @@ unsigned int HaveKeys(const vector<valtype>& pubkeys, const CKeyStore& keystore)
     return nResult;
 }
 
-isminetype IsMine(const CKeyStore &keystore, const CTxDestination& dest)
+isminetype IsMine(const CKeyStore &keystore, const CTxDestination& dest, CKeyID *pKeyID)
 {
     CScript script = GetScriptForDestination(dest);
-    return IsMine(keystore, script);
+    return IsMine(keystore, script, pKeyID);
 }
 
-isminetype IsMine(const CKeyStore &keystore, const CScript& scriptPubKey)
+isminetype IsMine(const CKeyStore &keystore, const CScript& scriptPubKey, CKeyID *pKeyID)
 {
     vector<valtype> vSolutions;
     txnouttype whichType;
@@ -53,13 +53,21 @@ isminetype IsMine(const CKeyStore &keystore, const CScript& scriptPubKey)
         break;
     case TX_PUBKEY:
         keyID = CPubKey(vSolutions[0]).GetID();
-        if (keystore.HaveKey(keyID))
+        if (keystore.HaveKey(keyID)) {
+            if (NULL != pKeyID) {
+                *pKeyID = keyID;
+            }
             return ISMINE_SPENDABLE;
+        }
         break;
     case TX_PUBKEYHASH:
         keyID = CKeyID(uint160(vSolutions[0]));
-        if (keystore.HaveKey(keyID))
+        if (keystore.HaveKey(keyID)) {
+            if (NULL != pKeyID) {
+                *pKeyID = keyID;
+            }
             return ISMINE_SPENDABLE;
+        }
         break;
     case TX_SCRIPTHASH:
     {
